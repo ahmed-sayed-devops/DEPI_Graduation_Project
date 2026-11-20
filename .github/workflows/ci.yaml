@@ -1,33 +1,31 @@
+
 name: FireGrill CI
 
 on:
-     workflow_dispatch
-
-
+  workflow_dispatch:
 
 jobs:
   build:
-    
-    - name: Install and Validate
-    - runs_on: ubuntu-latest
+    name: Install and Validate
+    runs-on: ubuntu-latest
 
-      steps:
-        - name: Get Source Code
-        - uses: actions/checkout@v7
+    steps:
+      - name: Get Source Code
+        uses: actions/checkout@v7
 
-        - name: Setup Node.js
-        - uses: actions/setup-node@v7
-          with:
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
           node-version: '24'
           cache: npm
 
-        - name: Install Dependencies
-        - run: npm ci  
+      - name: Install Dependencies
+        run: npm ci
 
-        - name: Check JavaScript Syntax
-        - run: |
-            node --check server.js
-            node --check db.js
-            node --check models/order.js
-            node --check models/product.js
-            node --check models/user.js   
+      - name: Check JavaScript Syntax
+        run: |
+          node --check server.js
+          node --check db.js
+          node --check models/order.js
+          node --check models/product.js
+          node --check models/user.js
