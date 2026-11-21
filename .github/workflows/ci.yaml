@@ -1,14 +1,20 @@
+
 name: FireGrill CI
 
 on:
   workflow_dispatch:
 
+concurrency:
+  group: firegrill
+  cancel-in-progress: false
+
 jobs:
   build:
+    name: Install and Validate
     runs-on: ubuntu-latest
 
     steps:
-      - name: Get Source Code 
+      - name: Get Source Code
         uses: actions/checkout@v7
 
       - name: Setup Node.js
@@ -27,3 +33,22 @@ jobs:
           node --check models/order.js
           node --check models/product.js
           node --check models/user.js
+
+  Docker-Publish:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Get Source Code
+        uses: actions/checkout@v7
+
+      - name: Build Docker Image
+        run: docker build -t fadel87/firegrill-app:v${{ github.run_number }} .
+
+      - name: Login to Docker Hub
+        run: |
+          echo "${{ secrets.PASSWD }}" | docker login -u "${{ secrets.USERNAME }}" --password-stdin
+
+      - name: Push Docker Image
+        run: docker push fadel87/firegrill-app:v${{ github.run_number }}
