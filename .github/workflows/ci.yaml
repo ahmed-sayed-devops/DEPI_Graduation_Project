@@ -7,6 +7,9 @@ concurrency:
   group: firegrill
   cancel-in-progress: false
 
+permissions:
+  contents: write  
+
 jobs:
   build:
     name: Install and Validate
