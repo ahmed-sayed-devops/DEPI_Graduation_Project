@@ -55,22 +55,22 @@ jobs:
       - name: Build Backend Docker Image
         run: |
           docker build \
-            -t fadel87/firegrill:backend-v${{ github.run_number }} \
+            -t fadel87/firegrill:backend \
             -f application/backend/Dockerfile \
             application/backend
 
       - name: Push Backend Docker Image
-        run: docker push fadel87/firegrill:backend-v${{ github.run_number }}
+        run: docker push fadel87/firegrill:backend
 
       - name: Build Frontend Docker Image
         run: |
           docker build \
-            -t fadel87/firegrill:frontend-v${{ github.run_number }} \
+            -t fadel87/firegrill:frontend \
             -f application/frontend/Dockerfile \
             application/frontend
 
       - name: Push Frontend Docker Image
-        run: docker push fadel87/firegrill:frontend-v${{ github.run_number }}
+        run: docker push fadel87/firegrill:frontend
 
   Update-GitOps:
     name: Update GitOps Branch
