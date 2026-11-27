@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write  
+  contents: write
 
 jobs:
   build:
@@ -24,11 +24,14 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+          cache-dependency-path: application/backend/package-lock.json
 
       - name: Install Dependencies
+        working-directory: application/backend
         run: npm ci
 
       - name: Check JavaScript Syntax
+        working-directory: application/backend
         run: |
           node --check server.js
           node --check db.js
@@ -37,7 +40,7 @@ jobs:
           node --check models/user.js
 
   Docker-Publish:
-    name: Build and Push Docker Image
+    name: Build and Push Docker Images
     runs-on: ubuntu-latest
     needs: build
 
@@ -45,11 +48,42 @@ jobs:
       - name: Get Source Code
         uses: actions/checkout@v7
 
-      - name: Build Docker Image
-        run: docker build -t firegrill/firegrill-app:v${{ github.run_number }} .
-
       - name: Login to Docker Hub
         run: docker login -u ${{ secrets.USERNAME }} -p ${{ secrets.PASSWD }}
 
-      - name: Push Docker Image
-        run: docker push firegrill/firegrill-app:v${{ github.run_number }}
+      - name: Build Backend Docker Image
+        run: |
+          docker build \
+            -t fadel87/firegrill:firegrill-backend-v1-build-${{ github.run_number }} \
+            -f application/backend/Dockerfile \
+            application/backend
+
+      - name: Push Backend Docker Image
+        run: docker push fadel87/firegrill:firegrill-backend-v1-build-${{ github.run_number }}
+
+      - name: Build Frontend Docker Image
+        run: |
+          docker build \
+            -t fadel87/firegrill:firegrill-frontend-v1-build-${{ github.run_number }} \
+            -f application/frontend/Dockerfile \
+            application/frontend
+
+      - name: Push Frontend Docker Image
+        run: docker push fadel87/firegrill:firegrill-frontend-v1-build-${{ github.run_number }}
+
+  Update-GitOps:
+    name: Update GitOps Branch
+    runs-on: ubuntu-latest
+    needs: Docker-Publish
+
+    steps:
+      - name: Get Source Code from GitOps Branch
+        uses: actions/checkout@v7
+        with:
+          ref: gitops
+          path: gitops
+
+      - name: Install yq
+        run: |
+          sudo wget https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 -O /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq

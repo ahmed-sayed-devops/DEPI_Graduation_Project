@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: app
+data:
+  PORT: "3000"
+  NODE_ENV: "production"
+  CORS_ORIGIN: "*"
+  SEED_DATABASE: "true"
+  TRUST_PROXY: "2"
+  KEEP_ALIVE_TIMEOUT_MS: "65000"
+  LOG_REQUESTS: "true"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secret
+  namespace: app
+type: Opaque
+stringData:
+  MONGO_URI: "mongodb://appuser:DepiNexusMongo2026Pass@mongodb.database.svc.cluster.local:27017/restaurant?authSource=admin"
+  SESSION_SECRET: "9f8e7d6c5b4a392817263544536271809f8e7d6c5b4a39281726354453627180"

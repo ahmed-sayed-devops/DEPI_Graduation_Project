@@ -1,0 +1,463 @@
+---
+# 1. Prepare all Kubernetes nodes & set clean Hostnames
+- name: Prepare K8s Cluster Nodes
+  hosts: k8s_cluster
+  become: true
+  tasks:
+    - name: Set system hostname to inventory name
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Map hostname in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1'
+        line: "127.0.1.1 {{ inventory_hostname }}"
+        state: present
+
+    - name: Update apt cache and install prerequisites
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+          - gnupg
+          - open-iscsi
+          - nfs-common
+        state: present
+        update_cache: true
+
+    - name: Disable swap immediately
+      ansible.builtin.command: swapoff -a
+      changed_when: false
+
+    - name: Disable swap permanently in fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+
+    - name: Create RKE2 config directory
+      ansible.builtin.file:
+        path: /etc/rancher/rke2
+        state: directory
+        mode: '0755'
+
+# 2. Install & Configure RKE2 Master (Cilium CNI + Ingress disabled for Gateway API)
+- name: Setup RKE2 Master Node
+  hosts: k8s_master
+  become: true
+  tasks:
+    - name: Configure RKE2 Server
+      ansible.builtin.copy:
+        dest: /etc/rancher/rke2/config.yaml
+        mode: '0644'
+        content: |
+          node-name: "{{ inventory_hostname }}"
+          cni: cilium
+          tls-san:
+            - "{{ ansible_host }}"
+            - "{{ inventory_hostname }}"
+          disable:
+            - rke2-ingress-nginx
+
+    - name: Install RKE2 Server binary
+      ansible.builtin.shell: curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="server" sh -
+      args:
+        creates: /usr/local/bin/rke2
+
+    - name: Enable and start rke2-server service
+      ansible.builtin.systemd:
+        name: rke2-server
+        enabled: true
+        state: started
+
+    - name: Wait for RKE2 node token to be generated
+      ansible.builtin.wait_for:
+        path: /var/lib/rancher/rke2/server/node-token
+        timeout: 300
+
+    - name: Wait for Kubernetes API port 6443
+      ansible.builtin.wait_for:
+        port: 6443
+        timeout: 300
+
+    - name: Read RKE2 node token
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/rke2/server/node-token
+      register: node_token_raw
+
+    - name: Save node token as fact
+      ansible.builtin.set_fact:
+        rke2_token: "{{ node_token_raw['content'] | b64decode | trim }}"
+
+    - name: Read kubeconfig from Master
+      ansible.builtin.slurp:
+        src: /etc/rancher/rke2/rke2.yaml
+      register: kubeconfig_raw
+
+    - name: Save kubeconfig as fact
+      ansible.builtin.set_fact:
+        rke2_kubeconfig: "{{ kubeconfig_raw['content'] | b64decode }}"
+
+# 3. Join RKE2 Worker Nodes
+- name: Setup RKE2 Worker Nodes
+  hosts: k8s_workers
+  become: true
+  vars:
+    master_ip: "{{ hostvars[groups['k8s_master'][0]]['ansible_host'] }}"
+    cluster_token: "{{ hostvars[groups['k8s_master'][0]]['rke2_token'] }}"
+  tasks:
+    - name: Configure RKE2 Agent
+      ansible.builtin.copy:
+        dest: /etc/rancher/rke2/config.yaml
+        mode: '0600'
+        content: |
+          node-name: "{{ inventory_hostname }}"
+          server: https://{{ master_ip }}:9345
+          token: {{ cluster_token }}
+      register: agent_config
+
+    - name: Install RKE2 Agent binary
+      ansible.builtin.shell: curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="agent" sh -
+      args:
+        creates: /usr/local/bin/rke2
+
+    - name: Enable and start rke2-agent service
+      ansible.builtin.systemd:
+        name: rke2-agent
+        enabled: true
+        state: "{{ 'restarted' if agent_config.changed else 'started' }}"
+
+# 4. Configure Bastion & Cluster Add-ons (StorageClass, Gateway API, Namespaces & RBAC)
+- name: Configure Bastion & Cluster Add-ons
+  hosts: localhost
+  connection: local
+  vars:
+    master_ip: "{{ hostvars[groups['k8s_master'][0]]['ansible_host'] }}"
+    raw_kubeconfig: "{{ hostvars[groups['k8s_master'][0]]['rke2_kubeconfig'] }}"
+  tasks:
+    - name: Set Bastion hostname
+      become: true
+      ansible.builtin.hostname:
+        name: depi-bastion
+
+    - name: Map Bastion hostname in /etc/hosts
+      become: true
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1'
+        line: "127.0.1.1 depi-bastion"
+        state: present
+
+    - name: Install kubectl on Bastion
+      become: true
+      ansible.builtin.shell: |
+        KUBE_VER=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+        curl -LO "https://dl.k8s.io/release/${KUBE_VER}/bin/linux/amd64/kubectl"
+        install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+        rm -f kubectl
+      args:
+        creates: /usr/local/bin/kubectl
+
+    - name: Install Helm on Bastion
+      become: true
+      ansible.builtin.shell: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Create .kube directory on Bastion
+      ansible.builtin.file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0700'
+
+    - name: Write kubeconfig pointing to Master Private IP
+      ansible.builtin.copy:
+        content: "{{ raw_kubeconfig | replace('127.0.0.1', master_ip) }}"
+        dest: /home/ubuntu/.kube/config
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    - name: Wait until all 3 Kubernetes nodes are Ready
+      ansible.builtin.shell: |
+        kubectl get nodes --no-headers | grep -c ' Ready '
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      register: ready_nodes
+      until: ready_nodes.stdout | int == 3
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: Label worker nodes with worker role
+      ansible.builtin.command: >
+        kubectl label node {{ item }} node-role.kubernetes.io/worker=true --overwrite
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      loop: "{{ groups['k8s_workers'] }}"
+      changed_when: false
+
+    - name: Install Rancher Local Path Provisioner (for PVCs)
+      ansible.builtin.command: >
+        kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.30/deploy/local-path-storage.yaml
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      changed_when: false
+
+    - name: Set local-path as default StorageClass
+      ansible.builtin.command: >
+        kubectl patch storageclass local-path
+        -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      changed_when: false
+
+    - name: Ensure Kubernetes Gateway API Standard CRDs exist
+      ansible.builtin.shell: |
+        kubectl get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1 || \
+        kubectl apply --server-side --force-conflicts -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      changed_when: false
+
+    - name: Configure rke2-traefik for Gateway API and expose NodePort 30080
+      ansible.builtin.shell: |
+        cat << 'EOF' | kubectl apply -f -
+        apiVersion: helm.cattle.io/v1
+        kind: HelmChartConfig
+        metadata:
+          name: rke2-traefik
+          namespace: kube-system
+        spec:
+          valuesContent: |-
+            providers:
+              kubernetesIngress:
+                enabled: false
+              kubernetesGateway:
+                enabled: true
+            gatewayClass:
+              enabled: true
+            gateway:
+              enabled: false
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: traefik-gateway-nodeport
+          namespace: kube-system
+        spec:
+          type: NodePort
+          selector:
+            app.kubernetes.io/name: rke2-traefik
+          ports:
+            - name: web
+              port: 80
+              targetPort: web
+              nodePort: 30080
+        EOF
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      changed_when: false
+
+    - name: Wait for traefik GatewayClass to be accepted
+      ansible.builtin.command: >
+        kubectl get gatewayclass traefik -o jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      register: gw_class_status
+      until: gw_class_status.stdout == "True"
+      retries: 30
+      delay: 6
+      changed_when: false
+
+    - name: Create cluster-wide depi-gateway resource
+      ansible.builtin.shell: |
+        cat << 'EOF' | kubectl apply -f -
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        metadata:
+          name: depi-gateway
+          namespace: kube-system
+        spec:
+          gatewayClassName: traefik
+          listeners:
+            - name: web
+              protocol: HTTP
+              port: 8000
+              allowedRoutes:
+                namespaces:
+                  from: All
+        EOF
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      changed_when: false
+
+    - name: Create project Namespaces and Least-Privilege RBAC
+      ansible.builtin.shell: |
+        cat << 'EOF' | kubectl apply -f -
+        # --- Namespaces ---
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: app
+          labels:
+            project: depi-nexus
+            tier: application
+            pod-security.kubernetes.io/warn: restricted
+            pod-security.kubernetes.io/audit: restricted
+        ---
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: database
+          labels:
+            project: depi-nexus
+            tier: data
+        ---
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: monitoring
+          labels:
+            project: depi-nexus
+            tier: observability
+        ---
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: argocd
+          labels:
+            project: depi-nexus
+            tier: gitops
+        ---
+        # --- Hardened Workload ServiceAccounts (No K8s API token auto-mount) ---
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: app-frontend-sa
+          namespace: app
+        automountServiceAccountToken: false
+        ---
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: app-backend-sa
+          namespace: app
+        automountServiceAccountToken: false
+        ---
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: mongodb-sa
+          namespace: database
+        automountServiceAccountToken: false
+        ---
+        # --- CI/CD Deployer RBAC (Scoped strictly to 'app' namespace) ---
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: ci-deployer-sa
+          namespace: app
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: Role
+        metadata:
+          name: app-deployer-role
+          namespace: app
+        rules:
+          - apiGroups: ["", "apps"]
+            resources: ["deployments", "replicasets", "services", "configmaps", "secrets", "pods"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          - apiGroups: [""]
+            resources: ["pods/log", "events"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: ["gateway.networking.k8s.io"]
+            resources: ["httproutes"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          - apiGroups: ["autoscaling"]
+            resources: ["horizontalpodautoscalers"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        metadata:
+          name: app-deployer-binding
+          namespace: app
+        subjects:
+          - kind: ServiceAccount
+            name: ci-deployer-sa
+            namespace: app
+        roleRef:
+          kind: Role
+          name: app-deployer-role
+          apiGroup: rbac.authorization.k8s.io
+        ---
+        # --- Database Ops RBAC (Scoped strictly to 'database' namespace) ---
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: db-ops-sa
+          namespace: database
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: Role
+        metadata:
+          name: db-ops-role
+          namespace: database
+        rules:
+          - apiGroups: ["", "apps"]
+            resources: ["statefulsets", "services", "persistentvolumeclaims", "configmaps", "secrets", "pods"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          - apiGroups: ["networking.k8s.io"]
+            resources: ["networkpolicies"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        metadata:
+          name: db-ops-binding
+          namespace: database
+        subjects:
+          - kind: ServiceAccount
+            name: db-ops-sa
+            namespace: database
+        roleRef:
+          kind: Role
+          name: db-ops-role
+          apiGroup: rbac.authorization.k8s.io
+        ---
+        # --- Cluster Read-Only Viewer RBAC (No Secrets access) ---
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: depi-viewer-sa
+          namespace: default
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRole
+        metadata:
+          name: depi-cluster-viewer
+        rules:
+          - apiGroups: ["", "apps", "batch", "gateway.networking.k8s.io"]
+            resources: ["namespaces", "nodes", "pods", "pods/log", "services", "deployments", "statefulsets", "events", "gateways", "httproutes"]
+            verbs: ["get", "list", "watch"]
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: depi-cluster-viewer-binding
+        subjects:
+          - kind: ServiceAccount
+            name: depi-viewer-sa
+            namespace: default
+        roleRef:
+          kind: ClusterRole
+          name: depi-cluster-viewer
+          apiGroup: rbac.authorization.k8s.io
+        EOF
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      changed_when: false

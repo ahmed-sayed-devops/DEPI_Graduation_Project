@@ -1,1 +1,13 @@
 node_modules/
+# Terraform & Secrets (NEVER COMMIT)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+#*.pem
+terraform/inventory.ini
+
+# Node, Env & Local Archives
+node_modules/
+.env
+*.zip
+*.bak
