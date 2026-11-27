@@ -1,8 +1,10 @@
 node_modules
-npm-debug.log
 .env
+.env.*
+!.env.example
 .git
 .gitignore
-README.md
+*.md
+*.log
 Dockerfile
-docker-compose.yaml
+.dockerignore
