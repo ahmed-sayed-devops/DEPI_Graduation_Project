@@ -52,25 +52,25 @@ jobs:
       - name: Login to Docker Hub
         run: docker login -u ${{ secrets.USERNAME }} -p ${{ secrets.PASSWD }}
 
-      - name: Build Backend Docker Image
+            - name: Build Backend Docker Image
         run: |
           docker build \
-            -t fadel87/firegrill:backend \
+            -t fadel87/firegrill:firegrill-backend-v1-build-${{ github.run_number }} \
             -f application/backend/Dockerfile \
             application/backend
 
       - name: Push Backend Docker Image
-        run: docker push fadel87/firegrill:backend
+        run: docker push fadel87/firegrill:firegrill-backend-v1-build-${{ github.run_number }}
 
       - name: Build Frontend Docker Image
         run: |
           docker build \
-            -t fadel87/firegrill:frontend \
+            -t fadel87/firegrill:firegrill-frontend-v1-build-${{ github.run_number }} \
             -f application/frontend/Dockerfile \
             application/frontend
 
       - name: Push Frontend Docker Image
-        run: docker push fadel87/firegrill:frontend
+        run: docker push fadel87/firegrill:firegrill-frontend-v1-build-${{ github.run_number }}
 
   Update-GitOps:
     name: Update GitOps Branch
