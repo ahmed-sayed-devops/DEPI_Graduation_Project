@@ -51,7 +51,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: backend
-          image: a7medsayed/depi-restaurant-backend:v16
+          image: fadel87/firegrill:backend-v17
           imagePullPolicy: Always
           ports:
             - name: http
