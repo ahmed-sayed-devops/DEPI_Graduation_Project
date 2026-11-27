@@ -60,7 +60,7 @@ jobs:
             application/backend
 
       - name: Push Backend Docker Image
-        run: docker push firegrill/backend:v${{ github.run_number }}
+        run: docker push fadel87/backend:v${{ github.run_number }}
 
       - name: Build Frontend Docker Image
         run: |
@@ -70,7 +70,7 @@ jobs:
             application/frontend
 
       - name: Push Frontend Docker Image
-        run: docker push firegrill/frontend:v${{ github.run_number }}
+        run: docker push fadel87/frontend:v${{ github.run_number }}
 
   Update-GitOps:
     name: Update GitOps Branch
