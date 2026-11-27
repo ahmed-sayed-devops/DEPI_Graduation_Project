@@ -1,0 +1,17 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: frontend-web-route
+  namespace: app
+spec:
+  parentRefs:
+    - name: depi-gateway
+      namespace: kube-system
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: frontend-svc
+          port: 80
