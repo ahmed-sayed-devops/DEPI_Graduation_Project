@@ -51,7 +51,7 @@ jobs:
       - name: Login to Docker Hub
         run: docker login -u ${{ secrets.USERNAME }} -p ${{ secrets.PASSWD }}
 
-            - name: Build Backend Docker Image
+      - name: Build Backend Docker Image
         run: |
           docker build \
             -t fadel87/firegrill:firegrill-backend-v1-build-${{ github.run_number }} \
