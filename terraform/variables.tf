@@ -1,7 +1,7 @@
 variable "aws_profile" {
   description = "Local AWS CLI Profile"
   type        = string
-  default     = "depi-admin" # غيره لـ terraform_dev لو ده الاسم اللي عندك
+  default     = "depi-admin" 
 }
 
 variable "aws_region" {
@@ -43,13 +43,13 @@ variable "private_subnets" {
 variable "bastion_instance_type" {
   description = "Bastion + Ansible Controller instance type (1 vCPU)"
   type        = string
-  default     = "t2.micro" # ممكن ترفعها لـ t2.small لو حبيت 2GB RAM ولسه 1 vCPU
+  default     = "t2.micro" 
 }
 
 variable "k8s_instance_type" {
   description = "K8s Master & Worker instance type (2 vCPUs each)"
   type        = string
-  default     = "t3.medium" # ممكن ترفعها لـ t3.large وقت الديمو بنفس الـ 2 vCPU و 8GB RAM
+  default     = "t3.medium" 
 }
 
 variable "gateway_http_nodeport" {
