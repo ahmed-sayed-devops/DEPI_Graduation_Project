@@ -51,7 +51,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: frontend
-          image: fadel87/firegrill:frontend-v17
+          image: fadel87/firegrill:frontend-v18
           imagePullPolicy: Always
           ports:
             - name: http
