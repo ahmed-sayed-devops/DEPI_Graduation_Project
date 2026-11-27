@@ -55,22 +55,22 @@ jobs:
       - name: Build Backend Docker Image
         run: |
           docker build \
-            -t fadel87/firegrill:firegrill-backend-v1-build-${{ github.run_number }} \
+            -t a7medsayed/depi-restaurant-backend:v${{ github.run_number }} \
             -f application/backend/Dockerfile \
             application/backend
 
       - name: Push Backend Docker Image
-        run: docker push fadel87/firegrill:firegrill-backend-v1-build-${{ github.run_number }}
+        run: docker push a7medsayed/depi-restaurant-backend:v${{ github.run_number }}
 
       - name: Build Frontend Docker Image
         run: |
           docker build \
-            -t fadel87/firegrill:firegrill-frontend-v1-build-${{ github.run_number }} \
+            -t a7medsayed/depi-restaurant-frontend:v${{ github.run_number }} \
             -f application/frontend/Dockerfile \
             application/frontend
 
       - name: Push Frontend Docker Image
-        run: docker push fadel87/firegrill:firegrill-frontend-v1-build-${{ github.run_number }}
+        run: docker push a7medsayed/depi-restaurant-frontend:v${{ github.run_number }}
 
   Update-GitOps:
     name: Update GitOps Branch
@@ -91,11 +91,11 @@ jobs:
 
       - name: Update Backend Image
         run: |
-          yq -i 'select(.kind == "Deployment").spec.template.spec.containers[] |= (select(.name == "backend").image = "fadel87/firegrill:firegrill-backend-v1-build-${{ github.run_number }}")' gitops/k8s/backend/backend-deployment.yaml
+          yq -i 'select(.kind == "Deployment").spec.template.spec.containers[] |= (select(.name == "backend").image = "a7medsayed/depi-restaurant-backend:v${{ github.run_number }}")' gitops/k8s/backend/backend-deployment.yaml
 
       - name: Update Frontend Image
         run: |
-          yq -i 'select(.kind == "Deployment").spec.template.spec.containers[] |= (select(.name == "frontend").image = "fadel87/firegrill:firegrill-frontend-v1-build-${{ github.run_number }}")' gitops/k8s/frontend/frontend-deployment.yaml
+          yq -i 'select(.kind == "Deployment").spec.template.spec.containers[] |= (select(.name == "frontend").image = "a7medsayed/depi-restaurant-frontend:v${{ github.run_number }}")' gitops/k8s/frontend/frontend-deployment.yaml
 
       - name: Commit and Push GitOps Changes
         run: |
