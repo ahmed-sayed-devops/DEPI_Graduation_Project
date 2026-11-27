@@ -4,6 +4,61 @@ let user = JSON.parse(localStorage.getItem('user')) || null;
 let products = [];
 let cart =[];
 
+// --- Authenticated API helper ---
+// Sends the session token; if the server rejects it (expired/invalid) we log the user out.
+async function authFetch(url, options = {}) {
+    const res = await fetch(url, {
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...(options.headers || {}),
+            Authorization: `Bearer ${user ? user.token : ''}`
+        }
+    });
+    if (res.status === 401) {
+        showToast('Session expired, please log in again.', 'error');
+        logout();
+        throw new Error('Unauthorized');
+    }
+    return res;
+}
+
+// --- Cart sync (the database is the source of truth) ---
+async function loadCart() {
+    try {
+        const res = await authFetch(`${API_URL}/cart`);
+        if (!res.ok) throw new Error('Failed to load cart');
+        const data = await res.json();
+        cart = data.cart;
+    } catch (err) {
+        if (err.message !== 'Unauthorized') showToast('Could not load your cart', 'error');
+        return;
+    }
+    updateCartUI();
+}
+
+// Sends a cart change to the server and replaces the local cart with the saved result.
+// Returns true on success.
+async function syncCart(url, method, body) {
+    try {
+        const res = await authFetch(url, {
+            method,
+            body: body ? JSON.stringify(body) : undefined
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            showToast(data.message || 'Cart update failed', 'error');
+            return false;
+        }
+        cart = data.cart;
+        updateCartUI();
+        return true;
+    } catch (err) {
+        if (err.message !== 'Unauthorized') showToast('Server Error, cart not saved', 'error');
+        return false;
+    }
+}
+
 // --- Init ---
 window.onload = () => {
     document.getElementById('landing-section').classList.remove('hidden');
@@ -79,7 +134,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
         });
         const data = await res.json();
         if (res.ok) {
-            user = { id: data.userId, name: data.name };
+            user = { id: data.userId, name: data.name, token: data.token };
             localStorage.setItem('user', JSON.stringify(user));
             showToast(`Welcome back, ${user.name}!`);
             showApp();
@@ -88,6 +143,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 });
 
 function logout() {
+    // Only the local view is cleared; the cart stays saved in the database for next login.
     localStorage.removeItem('user');
     user = null;
     cart =[];
@@ -103,6 +159,7 @@ function showApp() {
     document.getElementById('app-section').classList.remove('hidden');
     document.getElementById('user-name-display').innerText = `Hi, ${user.name}`;
     fetchProducts();
+    loadCart(); // restore this user's saved cart from MongoDB
 }
 
 // ... دوال جلب المنتجات (fetchProducts) والبحث وإضافة السلة تبقى كما هي ...
@@ -166,27 +223,30 @@ function toggleCart() {
     overlay.style.display = overlay.style.display === 'block' ? 'none' : 'block';
 }
 
-function addToCart(id) {
+async function addToCart(id) {
     const product = products.find(p => p._id === id);
-    const item = cart.find(i => i._id === id);
-    if (item) item.qty++;
-    else cart.push({ ...product, qty: 1 });
-    
-    updateCartUI();
+    if (!product) return;
+
+    const ok = await syncCart(`${API_URL}/cart`, 'POST', { productId: id, quantity: 1 });
+    if (!ok) return;
+
     showToast(`${product.name} added to cart!`);
-    
+
     const badge = document.getElementById('cart-badge');
     badge.style.transform = 'scale(1.5)';
     setTimeout(() => badge.style.transform = 'scale(1)', 200);
 }
 
-function changeQty(id, amount) {
+async function changeQty(id, amount) {
     const item = cart.find(i => i._id === id);
-    if (item) {
-        item.qty += amount;
-        if (item.qty <= 0) cart = cart.filter(i => i._id !== id);
+    if (!item) return;
+
+    const newQty = item.qty + amount;
+    if (newQty <= 0) {
+        await syncCart(`${API_URL}/cart/${id}`, 'DELETE');
+    } else {
+        await syncCart(`${API_URL}/cart/${id}`, 'PUT', { quantity: newQty });
     }
-    updateCartUI();
 }
 
 function updateCartUI() {
@@ -233,17 +293,15 @@ async function checkout() {
     if (cart.length === 0) return showToast('Cart is empty!', 'error');
 
     const orderData = {
-        userId: user.id,
         items: cart,
         totalPrice: parseFloat(document.getElementById('total-price').innerText)
     };
 
     try {
-        const res = await fetch(`${API_URL}/checkout`, {
+        const res = await authFetch(`${API_URL}/checkout`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(orderData)
-        });
+        }); // the server also empties the saved cart on success
         if (res.ok) {
             showToast('🎉 Order placed successfully!');
             cart =[]; 
@@ -255,6 +313,6 @@ async function checkout() {
             showToast(errorData.message || 'Checkout failed!', 'error');
         }
     } catch (err) {
-        showToast('Server Error, please try again.', 'error');
+        if (err.message !== 'Unauthorized') showToast('Server Error, please try again.', 'error');
     }
 }

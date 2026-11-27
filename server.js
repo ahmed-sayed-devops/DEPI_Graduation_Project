@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const path = require('path'); 
+const crypto = require('crypto');
+const mongoose = require('mongoose');
 require('dotenv').config();
 const connectDB = require('./db.js');
 
@@ -16,6 +18,47 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 connectDB();
+
+// --- Session tokens (HMAC-signed, no extra dependencies) ---
+// Set SESSION_SECRET in .env for production. If it is missing we derive a stable
+// secret from MONGO_URI so tokens survive server restarts.
+const SESSION_SECRET = process.env.SESSION_SECRET ||
+    crypto.createHash('sha256').update('session:' + (process.env.MONGO_URI || 'dev-secret')).digest('hex');
+const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+const sign = (data) => crypto.createHmac('sha256', SESSION_SECRET).update(data).digest('base64url');
+
+function createToken(userId) {
+    const payload = Buffer.from(JSON.stringify({ uid: String(userId), exp: Date.now() + TOKEN_TTL_MS })).toString('base64url');
+    return `${payload}.${sign(payload)}`;
+}
+
+function verifyToken(token) {
+    if (typeof token !== 'string') return null;
+    const [payload, signature] = token.split('.');
+    if (!payload || !signature) return null;
+    const expected = sign(payload);
+    const a = Buffer.from(signature);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    try {
+        const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+        if (!data.uid || data.exp < Date.now()) return null;
+        return data.uid;
+    } catch (e) {
+        return null;
+    }
+}
+
+// Auth middleware: expects "Authorization: Bearer <token>"
+function requireAuth(req, res, next) {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    const userId = verifyToken(token);
+    if (!userId) return res.status(401).json({ message: 'Please log in again' });
+    req.userId = userId;
+    next();
+}
 
 // --- APIs ---
 
@@ -47,7 +90,7 @@ app.post('/api/login', async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
 
-        res.status(200).json({ message: 'Login successful', userId: user._id, name: user.name });
+        res.status(200).json({ message: 'Login successful', userId: user._id, name: user.name, token: createToken(user._id) });
     } catch (err) {
         res.status(500).json({ message: 'Server Error' });
     }
@@ -68,13 +111,121 @@ app.get('/api/products', async (req, res) => {
     }
 });
 
-// 4. Checkout API
-app.post('/api/checkout', async (req, res) => {
+// 4. Checkout API (requires login; clears the saved cart once the order is stored)
+app.post('/api/checkout', requireAuth, async (req, res) => {
     try {
-        const { userId, items, totalPrice } = req.body;
-        const newOrder = new Order({ userId, items, totalPrice });
+        const { items, totalPrice } = req.body;
+        const newOrder = new Order({ userId: req.userId, items, totalPrice });
         await newOrder.save();
+        await User.updateOne({ _id: req.userId }, { $set: { cart: [] } });
         res.status(201).json({ message: 'Order placed successfully!' });
+    } catch (err) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// --- Cart APIs (all tied to the authenticated user's document in MongoDB) ---
+
+// Returns the cart in the shape the frontend uses: product fields + qty.
+// Entries whose product no longer exists (e.g. after a re-seed) are pruned.
+async function loadCart(userId) {
+    const user = await User.findById(userId).populate('cart.product');
+    if (!user) return null;
+
+    const valid = user.cart.filter(entry => entry.product);
+    if (valid.length !== user.cart.length) {
+        await User.updateOne({ _id: userId }, { $set: { cart: valid.map(e => ({ product: e.product._id, quantity: e.quantity })) } });
+    }
+    return valid.map(entry => ({
+        _id: entry.product._id,
+        name: entry.product.name,
+        category: entry.product.category,
+        price: entry.product.price,
+        description: entry.product.description,
+        image: entry.product.image,
+        qty: entry.quantity
+    }));
+}
+
+const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+// 5. Get cart
+app.get('/api/cart', requireAuth, async (req, res) => {
+    try {
+        const cart = await loadCart(req.userId);
+        if (!cart) return res.status(404).json({ message: 'User not found' });
+        res.status(200).json({ cart });
+    } catch (err) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// 6. Add item (increments quantity if it is already in the cart)
+app.post('/api/cart', requireAuth, async (req, res) => {
+    try {
+        const { productId } = req.body;
+        const quantity = req.body.quantity === undefined ? 1 : Number(req.body.quantity);
+        if (!isValidId(productId)) return res.status(400).json({ message: 'Invalid product' });
+        if (!Number.isInteger(quantity) || quantity < 1) return res.status(400).json({ message: 'Invalid quantity' });
+        if (!(await Product.exists({ _id: productId }))) return res.status(404).json({ message: 'Product not found' });
+
+        const updated = await User.updateOne(
+            { _id: req.userId, 'cart.product': productId },
+            { $inc: { 'cart.$.quantity': quantity } }
+        );
+        if (updated.matchedCount === 0) {
+            const pushed = await User.updateOne(
+                { _id: req.userId },
+                { $push: { cart: { product: productId, quantity } } }
+            );
+            if (pushed.matchedCount === 0) return res.status(404).json({ message: 'User not found' });
+        }
+        res.status(200).json({ cart: await loadCart(req.userId) });
+    } catch (err) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// 7. Set an item's quantity (a quantity of 0 or less removes it)
+app.put('/api/cart/:productId', requireAuth, async (req, res) => {
+    try {
+        const { productId } = req.params;
+        const quantity = Number(req.body.quantity);
+        if (!isValidId(productId)) return res.status(400).json({ message: 'Invalid product' });
+        if (!Number.isInteger(quantity)) return res.status(400).json({ message: 'Invalid quantity' });
+
+        if (quantity <= 0) {
+            await User.updateOne({ _id: req.userId }, { $pull: { cart: { product: productId } } });
+        } else {
+            const updated = await User.updateOne(
+                { _id: req.userId, 'cart.product': productId },
+                { $set: { 'cart.$.quantity': quantity } }
+            );
+            if (updated.matchedCount === 0) return res.status(404).json({ message: 'Item not in cart' });
+        }
+        res.status(200).json({ cart: await loadCart(req.userId) });
+    } catch (err) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// 8. Remove one item entirely
+app.delete('/api/cart/:productId', requireAuth, async (req, res) => {
+    try {
+        const { productId } = req.params;
+        if (!isValidId(productId)) return res.status(400).json({ message: 'Invalid product' });
+        await User.updateOne({ _id: req.userId }, { $pull: { cart: { product: productId } } });
+        res.status(200).json({ cart: await loadCart(req.userId) });
+    } catch (err) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// 9. Clear the whole cart
+app.delete('/api/cart', requireAuth, async (req, res) => {
+    try {
+        await User.updateOne({ _id: req.userId }, { $set: { cart: [] } });
+        res.status(200).json({ cart: [] });
     } catch (err) {
         res.status(500).json({ message: 'Server Error' });
     }
