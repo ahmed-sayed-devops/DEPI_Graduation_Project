@@ -55,22 +55,22 @@ jobs:
       - name: Build Backend Docker Image
         run: |
           docker build \
-            -t a7medsayed/depi-restaurant-backend:v${{ github.run_number }} \
+            -t fadel87/depi-restaurant-backend:v${{ github.run_number }} \
             -f application/backend/Dockerfile \
             application/backend
 
       - name: Push Backend Docker Image
-        run: docker push a7medsayed/depi-restaurant-backend:v${{ github.run_number }}
+        run: docker push fadel87/depi-restaurant-backend:v${{ github.run_number }}
 
       - name: Build Frontend Docker Image
         run: |
           docker build \
-            -t a7medsayed/depi-restaurant-frontend:v${{ github.run_number }} \
+            -t fadel87/depi-restaurant-frontend:v${{ github.run_number }} \
             -f application/frontend/Dockerfile \
             application/frontend
 
       - name: Push Frontend Docker Image
-        run: docker push a7medsayed/depi-restaurant-frontend:v${{ github.run_number }}
+        run: docker push fadel87/depi-restaurant-frontend:v${{ github.run_number }}
 
   Update-GitOps:
     name: Update GitOps Branch
