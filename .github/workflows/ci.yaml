@@ -83,18 +83,13 @@ jobs:
           ref: gitops
           path: gitops
 
-      - name: Install yq
-        run: |
-          sudo wget https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 -O /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
-
       - name: Update Backend Image
         run: |
-          yq -i 'select(.kind == "Deployment").spec.template.spec.containers[] |= (select(.name == "backend").image = "fadel87/firegrill:backend-v${{ github.run_number }}")' gitops/k8s/backend/backend-deployment.yaml
+          sed -i '/name: backend/,/image:/ s|image:.*|image: fadel87/firegrill:backend-v${{ github.run_number }}|' gitops/k8s/backend/backend-deployment.yaml
 
       - name: Update Frontend Image
         run: |
-          yq -i 'select(.kind == "Deployment").spec.template.spec.containers[] |= (select(.name == "frontend").image = "fadel87/firegrill:frontend-v${{ github.run_number }}")' gitops/k8s/frontend/frontend-deployment.yaml
+          sed -i '/name: frontend/,/image:/ s|image:.*|image: fadel87/firegrill:frontend-v${{ github.run_number }}|' gitops/k8s/frontend/frontend-deployment.yaml
 
       - name: Commit and Push GitOps Changes
         run: |
